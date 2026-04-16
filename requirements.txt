@@ -1,4 +1,7 @@
 streamlit
-numpy
+torch
+torchvision
+segmentation-models-pytorch
 pillow
-onnxruntime
+numpy
+gdown
