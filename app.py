@@ -1,7 +1,11 @@
 import streamlit as st
+import torch
 import numpy as np
 from PIL import Image
-import onnxruntime as ort
+from torchvision import transforms
+import segmentation_models_pytorch as smp
+import gdown
+import os
 
 st.set_page_config(page_title="Land Cover Classification", page_icon="🛰️")
 st.title("🌍 Land Cover Classification")
@@ -10,24 +14,41 @@ st.markdown("Upload a satellite image to classify land cover types")
 CLASS_NAMES = ['Urban', 'Agriculture', 'Forest', 'Water']
 COLORS = [(128,64,128), (34,139,34), (0,128,0), (70,130,180)]
 
+# Google Drive file ID (from your link)
+FILE_ID = "1IfnnZjZrDQFdbWB-3R3rvhZyJV2WJBRp"
+MODEL_PATH = "best_model.pth"
+
 @st.cache_resource
 def load_model():
-    return ort.InferenceSession('model.onnx', providers=['CPUExecutionProvider'])
+    """Download model from Google Drive if not exists, then load it"""
+    if not os.path.exists(MODEL_PATH):
+        with st.spinner(" Downloading model file (25MB)... This may take a minute"):
+            url = f"https://drive.google.com/uc?id={FILE_ID}"
+            gdown.download(url, MODEL_PATH, quiet=False)
+            st.success(" Model downloaded!")
+    
+    model = smp.Unet(
+        encoder_name="mobilenet_v2",
+        encoder_weights=None,
+        in_channels=3,
+        classes=4
+    )
+    model.load_state_dict(torch.load(MODEL_PATH, map_location='cpu'))
+    model.eval()
+    return model
 
 def preprocess(image):
-    image = image.resize((64, 64))
-    img = np.array(image).astype(np.float32) / 255.0
-    mean = np.array([0.485, 0.456, 0.406])
-    std = np.array([0.229, 0.224, 0.225])
-    img = (img - mean) / std
-    img = img.transpose(2, 0, 1)
-    img = np.expand_dims(img, axis=0)
-    return img
+    transform = transforms.Compose([
+        transforms.Resize((64, 64)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    return transform(image).unsqueeze(0)
 
-def predict(model, input_tensor):
-    outputs = model.run(['output'], {'input': input_tensor})[0]
-    mask = np.argmax(outputs[0], axis=0)
-    return mask
+def predict(model, tensor):
+    with torch.no_grad():
+        output = model(tensor)
+    return output.argmax(dim=1).squeeze(0).cpu().numpy()
 
 def colorize(mask):
     h, w = mask.shape
@@ -36,12 +57,13 @@ def colorize(mask):
         colored[mask == i] = color
     return colored
 
+# Load model
 try:
-    session = load_model()
-    st.success("✅ Model loaded successfully")
+    model = load_model()
+    st.success(" Model ready!")
     model_ok = True
 except Exception as e:
-    st.error(f"❌ Error loading model: {e}")
+    st.error(f"❌ Error: {e}")
     model_ok = False
 
 if model_ok:
@@ -54,15 +76,15 @@ if model_ok:
         col1.image(original, caption="Uploaded Image", use_container_width=True)
         
         with st.spinner("Classifying..."):
-            input_tensor = preprocess(original)
-            mask = predict(session, input_tensor)
+            tensor = preprocess(original)
+            mask = predict(model, tensor)
             colored = colorize(mask)
             result = Image.fromarray(colored)
             result = result.resize(original.size)
         
         col2.image(result, caption="Classification Result", use_container_width=True)
         
-        st.subheader("Land Cover Distribution")
+        st.subheader(" Land Cover Distribution")
         total = mask.size
         for i, name in enumerate(CLASS_NAMES):
             pct = (mask == i).sum() / total * 100
@@ -71,4 +93,4 @@ if model_ok:
         import io
         buf = io.BytesIO()
         result.save(buf, format='PNG')
-        st.download_button("📥 Download Result", data=buf.getvalue(), file_name="result.png")
+        st.download_button(" Download Result", data=buf.getvalue(), file_name="result.png")
